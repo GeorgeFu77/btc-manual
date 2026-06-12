@@ -48,6 +48,19 @@ class Trader:
         self._client.set_api_creds(self.creds)
         self.address = funder or self._client.get_address()
 
+        # Deposit-wallet accounts (signature_type=3) need the CLOB's
+        # balance/allowance bookkeeping refreshed before the first order.
+        try:
+            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
+
+            self._client.update_balance_allowance(
+                BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL, signature_type=sig_type
+                )
+            )
+        except Exception as e:
+            logger.warning("balance allowance refresh failed: %s", e)
+
         self._tick_size_cache: dict[str, str] = {}
         self._neg_risk_cache: dict[str, bool] = {}
         logger.info("Trader ready: address=%s sig_type=%d", self.address, sig_type)
