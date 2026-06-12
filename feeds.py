@@ -128,9 +128,10 @@ async def pm_task(view: MarketView, stop: asyncio.Event) -> None:
                             break
                         if msg.type != aiohttp.WSMsgType.TEXT or not msg.data:
                             continue
-                        px = _parse_pm(msg.data)
-                        if px is not None:
-                            view.update_pm(px)
+                        ticks = _parse_pm(msg.data)
+                        for ts_ms, px in ticks:
+                            view.update_pm(px, ts_ms)
+                        if ticks:
                             last_data = time.monotonic()
         except asyncio.CancelledError:
             raise
@@ -142,24 +143,32 @@ async def pm_task(view: MarketView, stop: asyncio.Event) -> None:
         backoff = min(backoff * 2, _BACKOFF_MAX)
 
 
-def _parse_pm(data: str) -> float | None:
-    """Extract the latest price from a PM RTDS message (batch or single)."""
+def _parse_pm(data: str) -> list[tuple[int, float]]:
+    """Extract (timestamp_ms, price) ticks from a PM RTDS message.
+
+    The first message after connect is a ~60s backfill batch — every tick is
+    returned (in timestamp order) so the window-open tick can be recovered.
+    """
     try:
         parsed = json.loads(data)
     except json.JSONDecodeError:
-        return None
+        return []
     payload = parsed.get("payload") or {}
     batch = payload.get("data")
-    if isinstance(batch, list) and batch:
-        item = batch[-1]
+    if isinstance(batch, list):
+        items = batch
     elif payload.get("value") is not None:
-        item = payload
+        items = [payload]
     else:
-        return None
-    try:
-        return float(item["value"])
-    except (KeyError, ValueError, TypeError):
-        return None
+        return []
+    ticks = []
+    for item in items:
+        try:
+            ticks.append((int(item["timestamp"]), float(item["value"])))
+        except (KeyError, ValueError, TypeError):
+            continue
+    ticks.sort()
+    return ticks
 
 
 async def discover_window(

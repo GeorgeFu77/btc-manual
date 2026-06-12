@@ -43,6 +43,9 @@ class MarketView:
     pm_ptb: float | None = None
     bn_window_id: int = 0
     bn_ptb: float | None = None
+    # Official "Price to Beat": the Chainlink tick stamped at the window-open
+    # second — exactly what Polymarket settles against. None until captured.
+    pm_official: float | None = None
 
     # Active Polymarket window + order books
     slug: str = ""
@@ -81,8 +84,19 @@ class MarketView:
     def update_cb(self, px: float) -> None:
         self._roll("cb", px)
 
-    def update_pm(self, px: float) -> None:
+    def update_pm(self, px: float, ts_ms: int | None = None) -> None:
+        wid = self.window_start()
+        if wid != self.pm_window_id:
+            self.pm_official = None
         self._roll("pm", px)
+        # The official anchor is the tick stamped at the window-open second
+        # (ticks are 1/s; allow a small gap before falling back to ~approx).
+        if (
+            ts_ms is not None
+            and self.pm_official is None
+            and wid * 1000 <= ts_ms <= wid * 1000 + 1500
+        ):
+            self.pm_official = px
 
     def update_bn(self, px: float) -> None:
         self._roll("bn", px)
@@ -117,6 +131,9 @@ class MarketView:
 
     @property
     def pm_delta(self) -> float | None:
+        # Prefer the official Price to Beat; fall back to first-seen tick
+        if self.pm_official is not None and self.pm_last is not None:
+            return self.pm_last - self.pm_official
         return self._delta("pm")
 
     @property

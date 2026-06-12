@@ -44,11 +44,15 @@ def snapshot(view: MarketView) -> str:
     clock = time.strftime("%H:%M:%S")
     left = view.seconds_left()
     edge = _signed(view.edge) if view.edge_active else f"{DIM}-{RESET}"
+    # '~' marks an approximate anchor (official window-open tick not seen yet)
+    approx = "" if view.pm_official is not None else "~"
+    beat = view.pm_official if view.pm_official is not None else view.pm_ptb
     parts = [
         f"{clock} left {left:3.0f}s",
         f"CB {_f(view.cb_last, '{:.1f}')} Δ{_signed(view.cb_delta)}",
         f"BN {_f(view.bn_last, '{:.1f}')} Δ{_signed(view.bn_delta)}",
-        f"PM {_f(view.pm_last, '{:.1f}')} Δ{_signed(view.pm_delta)}",
+        f"PM {_f(view.pm_last, '{:.1f}')} Δ{approx}{_signed(view.pm_delta)}",
+        f"{DIM}beat {_f(beat, '{:.2f}')}{approx}{RESET}",
         f"edge {edge}",
         f"{GREEN}UP{RESET} {_quote(view.up, GREEN)}",
         f"{RED}DN{RESET} {_quote(view.dn, RED)}",
@@ -58,14 +62,14 @@ def snapshot(view: MarketView) -> str:
     ]
     pos = position_summary(view)
     if pos:
-        parts.insert(7, pos)
+        parts.insert(len(parts) - 1, pos)  # before the age block
     return " | ".join(parts)
 
 
 def change_key(view: MarketView) -> tuple:
     """Everything that should trigger a new tape line when it changes."""
     return (
-        view.cb_last, view.bn_last, view.pm_last,
+        view.cb_last, view.bn_last, view.pm_last, view.pm_official,
         view.up.bid, view.up.ask, view.dn.bid, view.dn.ask,
         view.edge_active, view.slug,
     )
