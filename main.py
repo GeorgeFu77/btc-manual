@@ -1,8 +1,12 @@
-"""BTC 15m manual trader — live numbers + manual Polymarket orders.
+"""BTC up/down manual trader — live numbers + manual Polymarket orders.
+
+5-minute markets by default (--window 15 for the 15m market). A new tape
+line is printed whenever any number changes; the old lines stay in the
+scrollback. Edge is only shown in the final 45 seconds of a window.
 
 Usage:
-    python main.py            # live status bar + trading REPL
-    python main.py --watch    # numbers only, one line per second, Ctrl-C to exit
+    python main.py            # live tape + status bar + trading REPL
+    python main.py --watch    # tape only, Ctrl-C to exit
 
 Commands (REPL):
     b u 0.55 10 [ttl]   buy 10 UP @ 0.55 (optional ttl seconds -> GTD)
@@ -23,7 +27,7 @@ import os
 from dotenv import load_dotenv
 
 import display
-from feeds import cb_task, clob_task, pm_task
+from feeds import bn_task, cb_task, clob_task, pm_task
 from market import MarketView
 from trader import Trader, positions_poll_task, user_fills_task
 
@@ -36,12 +40,22 @@ logger = logging.getLogger("main")
 HELP = __doc__.split("Commands (REPL):", 1)[1]
 
 
-async def watch(view: MarketView, stop: asyncio.Event) -> None:
-    """Print one snapshot line per second (no trading)."""
+async def tape(view: MarketView, stop: asyncio.Event) -> None:
+    """Print a new line whenever any number changes (old lines stay above)."""
+    last_key: tuple | None = None
+    min_gap = 0.2  # don't exceed ~5 lines/sec when books churn
+    last_print = 0.0
+    import time as _time
+
     while not stop.is_set():
-        print(display.snapshot(view), flush=True)
+        key = display.change_key(view)
+        now = _time.monotonic()
+        if key != last_key and now - last_print >= min_gap:
+            print(display.snapshot(view), flush=True)
+            last_key = key
+            last_print = now
         try:
-            await asyncio.wait_for(stop.wait(), timeout=1.0)
+            await asyncio.wait_for(stop.wait(), timeout=0.1)
         except asyncio.TimeoutError:
             pass
 
@@ -111,6 +125,7 @@ async def handle_trade(
 
 async def repl(view: MarketView, stop: asyncio.Event, trading_tasks: list) -> None:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import ANSI
     from prompt_toolkit.patch_stdout import patch_stdout
 
     trader: Trader | None = None
@@ -128,11 +143,12 @@ async def repl(view: MarketView, stop: asyncio.Event, trading_tasks: list) -> No
 
     session: "PromptSession[str]" = PromptSession()
     with patch_stdout():
+        trading_tasks.append(asyncio.create_task(tape(view, stop)))
         while not stop.is_set():
             try:
                 line = await session.prompt_async(
                     "> ",
-                    bottom_toolbar=lambda: display.snapshot(view),
+                    bottom_toolbar=lambda: ANSI(display.snapshot(view)),
                     refresh_interval=0.5,
                 )
             except (EOFError, KeyboardInterrupt):
@@ -192,25 +208,33 @@ async def repl(view: MarketView, stop: asyncio.Event, trading_tasks: list) -> No
 
 
 async def amain() -> None:
-    parser = argparse.ArgumentParser(description="BTC 15m manual trader")
+    parser = argparse.ArgumentParser(description="BTC up/down manual trader")
     parser.add_argument(
         "--watch", action="store_true",
-        help="display only: print one status line per second",
+        help="display only: print the live tape, no REPL",
+    )
+    parser.add_argument(
+        "--window", type=int, choices=(5, 15), default=5,
+        help="market window in minutes (default 5)",
     )
     cli = parser.parse_args()
 
     load_dotenv()
-    view = MarketView()
+    view = MarketView(
+        bucket_sec=cli.window * 60,
+        slug_prefix=f"btc-updown-{cli.window}m-",
+    )
     stop = asyncio.Event()
     tasks = [
         asyncio.create_task(cb_task(view, stop)),
+        asyncio.create_task(bn_task(view, stop)),
         asyncio.create_task(pm_task(view, stop)),
         asyncio.create_task(clob_task(view, stop)),
     ]
 
     try:
         if cli.watch:
-            await watch(view, stop)
+            await tape(view, stop)
         else:
             await repl(view, stop, tasks)
     except KeyboardInterrupt:

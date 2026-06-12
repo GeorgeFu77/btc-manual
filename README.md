@@ -1,19 +1,25 @@
 # btc_manual
 
-Minimal manual-trading console for Polymarket BTC 15-minute up/down markets.
-Live market numbers + manual limit orders. No bot, no strategies.
+Minimal manual-trading console for Polymarket BTC up/down markets
+(5-minute windows by default). Live market numbers + manual limit orders.
+No bot, no strategies.
 
 ## What it shows
 
-One live status line (bottom bar in the REPL, scrolling lines in `--watch`):
+A live tape — a new line is printed whenever any number changes, and the old
+lines stay in the scrollback. The same line also sits in the bottom status bar
+in the REPL. UP is green, DOWN is red; deltas are green when positive, red
+when negative.
 
 ```
-14:32:05 left 433s | CB 76512.3 Δ+12.4 | PM 76500.1 Δ+8.2 | edge +4.2 | UP 0.52/0.53 | DN 0.47/0.48 | pos UP 10@0.52 | age cb0.1s pm0.4s up0.2s dn0.2s
+23:29:15 left  45s | CB 63063.0 Δ-6.7 | BN 63155.0 Δ-10.1 | PM 63064.9 Δ-7.7 | edge +1.0 | UP 0.03/0.04 | DN 0.96/0.97 | age cb0.2s bn0.3s pm1.0s up0.0s dn0.0s
 ```
 
 - **CB** — Coinbase BTC-USD spot, **Δ** = change since the window started
-- **PM** — Polymarket's Chainlink reference price (what settlement uses), **Δ** same
-- **edge** — CB Δ minus PM Δ (CB leads PM by ~2s)
+- **BN** — Binance BTC-USDT, same Δ
+- **PM** — Polymarket's Chainlink reference price (what settlement uses)
+- **edge** — CB Δ minus PM Δ (CB leads PM by ~2s); only shown in the
+  **final 45 seconds** of the window, dimmed `-` before that
 - **UP/DN** — best bid/ask for the window's UP and DOWN tokens
 - **age** — seconds since each feed last updated (watch for stale data)
 
@@ -30,8 +36,9 @@ cp .env.example .env   # fill in keys — only needed for trading
 ## Run
 
 ```bash
-.venv/bin/python main.py           # REPL + live status bar
-.venv/bin/python main.py --watch   # numbers only, Ctrl-C to quit
+.venv/bin/python main.py               # tape + REPL (5m market)
+.venv/bin/python main.py --window 15   # the 15m market instead
+.venv/bin/python main.py --watch       # tape only, Ctrl-C to quit
 ```
 
 ## Commands

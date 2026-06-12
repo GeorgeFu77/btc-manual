@@ -1,4 +1,4 @@
-"""WebSocket feeds: Coinbase spot, Polymarket Chainlink price, Polymarket CLOB books.
+"""WebSocket feeds: Coinbase, Binance, Polymarket Chainlink price, Polymarket CLOB.
 
 All feeds auto-reconnect with exponential backoff and write into a shared
 MarketView. Protocol quirks carried over from the proven implementation:
@@ -16,11 +16,12 @@ import time
 
 import aiohttp
 
-from market import BUCKET_SEC, GAMMA_URL, SLUG_PREFIX, MarketView, current_window_start
+from market import GAMMA_URL, MarketView
 
 logger = logging.getLogger(__name__)
 
 CB_URL = "wss://ws-feed.exchange.coinbase.com"
+BN_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 PM_URL = "wss://ws-live-data.polymarket.com"
 CLOB_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
@@ -55,6 +56,35 @@ async def cb_task(view: MarketView, stop: asyncio.Event) -> None:
             raise
         except Exception as e:
             logger.warning("CB feed error: %s", e)
+        if stop.is_set():
+            return
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, _BACKOFF_MAX)
+
+
+async def bn_task(view: MarketView, stop: asyncio.Event) -> None:
+    """Binance BTC-USDT trade feed."""
+    backoff = 1.0
+    while not stop.is_set():
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                    BN_URL, heartbeat=20, receive_timeout=30
+                ) as ws:
+                    logger.info("BN connected")
+                    backoff = 1.0
+                    async for msg in ws:
+                        if stop.is_set():
+                            return
+                        if msg.type != aiohttp.WSMsgType.TEXT:
+                            continue
+                        d = json.loads(msg.data)
+                        if d.get("p"):
+                            view.update_bn(float(d["p"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("BN feed error: %s", e)
         if stop.is_set():
             return
         await asyncio.sleep(backoff)
@@ -132,15 +162,17 @@ def _parse_pm(data: str) -> float | None:
         return None
 
 
-async def discover_window(session: aiohttp.ClientSession) -> tuple[str, str, str] | None:
-    """Find the active 15m market via the Gamma API.
+async def discover_window(
+    session: aiohttp.ClientSession, view: MarketView
+) -> tuple[str, str, str] | None:
+    """Find the active market via the Gamma API.
 
     Returns (slug, token_up, token_down) or None. Tries the current bucket
     first, then next, then previous.
     """
-    base = current_window_start()
-    for ts in (base, base + BUCKET_SEC, base - BUCKET_SEC):
-        slug = f"{SLUG_PREFIX}{ts}"
+    base = view.window_start()
+    for ts in (base, base + view.bucket_sec, base - view.bucket_sec):
+        slug = f"{view.slug_prefix}{ts}"
         try:
             async with session.get(
                 GAMMA_URL, params={"slug": slug},
@@ -166,11 +198,11 @@ async def discover_window(session: aiohttp.ClientSession) -> tuple[str, str, str
 
 
 async def clob_task(view: MarketView, stop: asyncio.Event) -> None:
-    """Order book feed for the active window's UP/DOWN tokens; rotates every 15m."""
+    """Order book feed for the active window's UP/DOWN tokens; rotates each window."""
     ping_interval = 10.0
     async with aiohttp.ClientSession() as session:
         while not stop.is_set():
-            found = await discover_window(session)
+            found = await discover_window(session, view)
             if found is None:
                 await asyncio.sleep(2.0)
                 continue
@@ -179,7 +211,9 @@ async def clob_task(view: MarketView, stop: asyncio.Event) -> None:
             logger.info("CLOB window: %s", slug)
 
             window_ts = int(slug.rsplit("-", 1)[-1])
-            boundary_mono = time.monotonic() + (window_ts + BUCKET_SEC - time.time())
+            boundary_mono = time.monotonic() + (
+                window_ts + view.bucket_sec - time.time()
+            )
 
             try:
                 async with session.ws_connect(CLOB_URL, receive_timeout=ping_interval * 3) as ws:
