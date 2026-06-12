@@ -418,7 +418,7 @@ function render(s) {
   $("positions").innerHTML = "<tr><th>market</th><th>side</th><th>size</th><th>avg</th><th>cur</th><th>pnl</th></tr>" +
     s.positions.map(p => `<tr><td>${p.title} ${p.window=="previous"?'<span class="dim">(prev)</span>':""}</td>
       <td class="${p.outcome.toLowerCase().startsWith('u')?'green':'red'}">${p.outcome}</td>
-      <td>${p.size}</td><td>${p.avg.toFixed(3)}</td><td>${p.cur.toFixed(3)}</td>
+      <td>${p.size}</td><td>${p.avg.toFixed(2)}</td><td>${p.cur.toFixed(2)}</td>
       <td class="${p.pnl>=0?'green':'red'}">${(p.pnl>=0?"+":"")+p.pnl.toFixed(2)}</td></tr>`).join("");
 
   const key = [s.cb, s.bn, s.pm, s.up_bid, s.up_ask, s.dn_bid, s.dn_ask].join(",");
