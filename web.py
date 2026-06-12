@@ -2,7 +2,7 @@
 
 GET  /            single-page UI
 WS   /ws          state snapshots pushed every 250ms
-POST /api/order   {outcome: "up"|"down", side: "BUY"|"SELL", price: float|"m", qty, ttl?}
+POST /api/order   {outcome: "up"|"down", side: "BUY"|"SELL", price: float|"m", qty}
 POST /api/cancel  {order_id: "..." | "all"}
 GET  /api/orders  open orders
 """
@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 def _state(view: MarketView, trading: bool) -> dict:
     def age(ts):
         return round(time.monotonic() - ts, 1) if ts else None
+
+    relevant = {
+        view.token_up, view.token_down,
+        view.prev_token_up, view.prev_token_down,
+    }
+    relevant.discard("")
+    current = {view.token_up, view.token_down}
 
     return {
         "clock": time.strftime("%H:%M:%S"),
@@ -54,9 +61,11 @@ def _state(view: MarketView, trading: bool) -> dict:
                 "avg": float(p.get("avgPrice", 0) or 0),
                 "cur": float(p.get("curPrice", 0) or 0),
                 "pnl": float(p.get("cashPnl", 0) or 0),
+                "window": "current" if str(p.get("asset", "")) in current else "previous",
             }
             for p in view.positions
             if float(p.get("size", 0) or 0) != 0
+            and str(p.get("asset", "")) in relevant
         ],
         "trading": trading,
     }
@@ -100,21 +109,22 @@ def make_app(view: MarketView, trader: Trader | None, stop: asyncio.Event) -> we
         price = body.get("price")
         if price == "m":
             price = quote.ask if side == "BUY" else quote.bid
-            if price is None:
+            # a 0.0 quote means an empty book side, not a tradable price
+            if not price or price <= 0:
                 return web.json_response({"error": "no quote for market order"}, status=400)
-            price = min(max(float(price), 0.01), 0.99)
         try:
             price = round(float(price), 2)
             qty = float(body.get("qty"))
         except (TypeError, ValueError):
             return web.json_response({"error": "bad price/qty"}, status=400)
-        if not 0.0 < price < 1.0 or qty <= 0:
-            return web.json_response({"error": "price must be 0-1, qty > 0"}, status=400)
-        ttl = body.get("ttl")
-        ttl = int(ttl) if ttl else None
+        # strict range check (also rejects NaN) — never silently clamp money
+        if not (0.01 <= price <= 0.99):
+            return web.json_response({"error": "price out of range (0.01-0.99)"}, status=400)
+        if not (qty > 0):
+            return web.json_response({"error": "qty must be > 0"}, status=400)
         label = "UP" if outcome == "up" else "DOWN"
         try:
-            order_id = await trader.place(token_id, side, price, qty, ttl)
+            order_id = await trader.place(token_id, side, price, qty, None)
         except Exception as e:
             logger.warning("web order failed: %s", e)
             return web.json_response({"error": str(e)}, status=500)
@@ -206,10 +216,13 @@ PAGE = r"""<!doctype html>
   button.buy { background:#1d3325; border-color:#2e5c3a; }
   button.sell { background:#36201f; border-color:#6b2f2c; }
   input { background:#11151a; color:var(--fg); border:1px solid #3a4450; border-radius:6px;
-          padding:6px 8px; font:inherit; width:80px; }
+          padding:4px 6px; font:inherit; width:56px; }
+  .chip { display:inline-block; padding:2px 9px; margin:2px 4px 2px 0; cursor:pointer;
+          border:1px solid #3a4450; border-radius:12px; font-size:12px; color:var(--fg); }
+  .chip:hover { border-color:#5c6773; }
+  .chip.sel { background:#2e5c3a; border-color:#3fb950; }
   #tape { max-height:200px; overflow-y:auto; font-size:12px; }
   #fills div { padding:1px 0; }
-  .clickpx { cursor:pointer; text-decoration:underline dotted; }
   #toast { position:fixed; bottom:16px; right:16px; background:#2a323c; padding:10px 16px;
            border-radius:8px; display:none; max-width:420px; }
 </style></head><body>
@@ -217,13 +230,15 @@ PAGE = r"""<!doctype html>
 <div class="row" id="topcards">
   <div class="card"><div class="lbl">window <span id="slug" class="dim"></span></div>
     <div class="big" id="left">-</div><div id="leftbar"><div id="leftfill"></div></div></div>
-  <div class="card"><div class="lbl">Chainlink (PM) — settlement</div>
-    <div class="big" id="pm">-</div><div>Δ <span id="pm_d">-</span>
-    <span class="dim">beat</span> <span id="beat" class="dim">-</span></div></div>
+  <div class="card"><div class="lbl">Polymarket — settlement</div>
+    <div class="big" id="pm_d">-</div>
+    <div class="dim">age <span id="age_pm">-</span> · beat <span id="beat">-</span></div></div>
   <div class="card"><div class="lbl">Coinbase</div>
-    <div class="big" id="cb">-</div><div>Δ <span id="cb_d">-</span></div></div>
+    <div class="big" id="cb_d">-</div>
+    <div class="dim">age <span id="age_cb">-</span></div></div>
   <div class="card"><div class="lbl">Binance</div>
-    <div class="big" id="bn">-</div><div>Δ <span id="bn_d">-</span></div></div>
+    <div class="big" id="bn_d">-</div>
+    <div class="dim">age <span id="age_bn">-</span></div></div>
   <div class="card"><div class="lbl">edge (last 45s)</div>
     <div class="big" id="edge">-</div></div>
 </div>
@@ -231,8 +246,8 @@ PAGE = r"""<!doctype html>
 <div class="row" style="margin-top:12px">
   <div class="card" style="flex:1">
     <div class="lbl green">UP</div>
-    <div class="big"><span class="clickpx" id="up_bid">-</span> /
-      <span class="clickpx" id="up_ask">-</span></div>
+    <div class="big"><span id="up_bid">-</span> / <span id="up_ask">-</span></div>
+    <div style="margin-top:6px"><span class="dim">shares</span> <span id="qty_up"></span></div>
     <div style="margin-top:8px">
       <button class="buy" onclick="order('up','BUY')">Buy UP</button>
       <button class="sell" onclick="order('up','SELL')">Sell UP</button>
@@ -240,50 +255,139 @@ PAGE = r"""<!doctype html>
   </div>
   <div class="card" style="flex:1">
     <div class="lbl red">DOWN</div>
-    <div class="big"><span class="clickpx" id="dn_bid">-</span> /
-      <span class="clickpx" id="dn_ask">-</span></div>
+    <div class="big"><span id="dn_bid">-</span> / <span id="dn_ask">-</span></div>
+    <div style="margin-top:6px"><span class="dim">shares</span> <span id="qty_dn"></span></div>
     <div style="margin-top:8px">
       <button class="buy" onclick="order('down','BUY')">Buy DOWN</button>
       <button class="sell" onclick="order('down','SELL')">Sell DOWN</button>
     </div>
   </div>
-  <div class="card">
-    <div class="lbl">order ticket</div>
-    <div style="margin-top:6px">
-      price <input id="price" placeholder="m = market">
-      qty <input id="qty" value="10">
-      ttl <input id="ttl" placeholder="sec (opt)">
+</div>
+
+<div class="row" style="margin-top:12px">
+  <div class="card" style="flex:1">
+    <div class="lbl green">UP — at offset from current price</div>
+    <div style="margin-top:6px"><span id="off_up_chips"></span>
+      <input id="off_up_custom" placeholder="+9/-9"></div>
+    <div class="dim" id="off_up_info" style="margin-top:6px"></div>
+    <div style="margin-top:8px">
+      <button class="buy" id="off_up_buy" onclick="orderOffset('up','BUY')">Buy</button>
+      <button class="sell" id="off_up_sell" onclick="orderOffset('up','SELL')">Sell</button>
     </div>
-    <div class="dim" style="margin-top:6px">price blank or “m” = take best bid/ask</div>
-    <div id="cost" style="margin-top:6px"></div>
-    <div style="margin-top:8px"><button onclick="cancelAll()">Cancel all</button>
-      <span id="trading_state" class="dim"></span></div>
+  </div>
+  <div class="card" style="flex:1">
+    <div class="lbl red">DOWN — at offset from current price</div>
+    <div style="margin-top:6px"><span id="off_dn_chips"></span>
+      <input id="off_dn_custom" placeholder="+9/-9"></div>
+    <div class="dim" id="off_dn_info" style="margin-top:6px"></div>
+    <div style="margin-top:8px">
+      <button class="buy" id="off_dn_buy" onclick="orderOffset('down','BUY')">Buy</button>
+      <button class="sell" id="off_dn_sell" onclick="orderOffset('down','SELL')">Sell</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="lbl">controls</div>
+    <div style="margin-top:8px"><button onclick="cancelAll()">Cancel all</button></div>
+    <div class="dim" id="trading_state" style="margin-top:8px"></div>
   </div>
 </div>
 
 <div class="row" style="margin-top:12px">
   <div class="card" style="flex:1"><div class="lbl">open orders</div>
     <table id="orders"></table></div>
-  <div class="card" style="flex:1"><div class="lbl">positions</div>
+  <div class="card" style="flex:1"><div class="lbl">positions (current + previous market)</div>
     <table id="positions"></table></div>
   <div class="card" style="flex:1"><div class="lbl">fills / events</div>
     <div id="fills"></div></div>
 </div>
 
 <div class="card" style="margin-top:12px"><div class="lbl">tape</div><div id="tape"></div></div>
-<div class="dim" style="margin-top:8px">ages: <span id="ages"></span></div>
 <div id="toast"></div>
 
 <script>
 const $ = id => document.getElementById(id);
 let S = null, lastTapeKey = "";
 
-function fmt(v, d=1) { return v == null ? "-" : v.toFixed(d); }
-function signed(el, v) {
-  if (v == null) { el.textContent = "-"; el.className = "dim"; return; }
-  el.textContent = (v >= 0 ? "+" : "") + v.toFixed(1);
-  el.className = v >= 0 ? "green" : "red";
+// ---- share size (shared by every button) ----
+// chips select on pointerdown (delegated on the container) so the 250ms
+// state refresh can never swallow a click; chip HTML is only rebuilt when
+// the selection itself changes, never per-frame
+const QTY_OPTS = [1, 5, 10, 25, 50];
+let QTY = 10;
+function setQty(v) {
+  v = parseFloat(v);
+  if (!v || v <= 0) return;
+  QTY = v;
+  renderQtyChips();
+  renderOffsetInfo();
 }
+function renderQtyChips() {
+  for (const box of ["qty_up", "qty_dn"]) {
+    $(box).innerHTML = QTY_OPTS.map(n =>
+      `<span class="chip ${n===QTY?'sel':''}" data-v="${n}">${n}</span>`).join("") +
+      `<input style="width:48px" placeholder="#" title="custom share count"
+        onchange="setQty(this.value)" ${QTY_OPTS.includes(QTY)?'':`value="${QTY}"`}>`;
+  }
+}
+$("qty_up").addEventListener("pointerdown", e => e.target.dataset.v && setQty(e.target.dataset.v));
+$("qty_dn").addEventListener("pointerdown", e => e.target.dataset.v && setQty(e.target.dataset.v));
+
+// ---- price offsets (cents from current best price) ----
+const OFF_OPTS = [-5, -3, -1, 1, 3];
+let OFF = { up: -1, down: -1 };
+function setOff(side, v) {
+  v = parseInt(v);
+  if (isNaN(v)) return;
+  OFF[side] = v;
+  const custom = $(`off_${side === "up" ? "up" : "dn"}_custom`);
+  custom.value = OFF_OPTS.includes(v) ? "" : (v > 0 ? "+" : "") + v;
+  renderOffsetChips();
+  renderOffsetInfo();
+}
+function offPrice(side, action) {
+  if (!S) return null;
+  const base = action === "BUY"
+    ? (side === "up" ? S.up_ask : S.dn_ask)
+    : (side === "up" ? S.up_bid : S.dn_bid);
+  if (base == null || base <= 0) return null;
+  let px = Math.round(base * 100 + OFF[side]) / 100;
+  return Math.min(Math.max(px, 0.01), 0.99);
+}
+function renderOffsetChips() {
+  for (const side of ["up", "down"]) {
+    const key = side === "up" ? "up" : "dn";
+    $(`off_${key}_chips`).innerHTML = OFF_OPTS.map(n =>
+      `<span class="chip ${n===OFF[side]?'sel':''}" data-v="${n}">${n>0?"+"+n:n}</span>`).join("");
+  }
+}
+// per-frame updates touch text only — chips and inputs are left alone
+function renderOffsetInfo() {
+  for (const side of ["up", "down"]) {
+    const key = side === "up" ? "up" : "dn";
+    const bpx = offPrice(side, "BUY"), spx = offPrice(side, "SELL");
+    $(`off_${key}_buy`).textContent = bpx == null ? "Buy -" : `Buy @ ${bpx.toFixed(2)}`;
+    $(`off_${key}_sell`).textContent = spx == null ? "Sell -" : `Sell @ ${spx.toFixed(2)}`;
+    const offtxt = (OFF[side] > 0 ? "+" : "") + OFF[side];
+    let info;
+    if (bpx == null && spx == null) info = "no quote yet";
+    else if (bpx == null) info = `${offtxt}¢ → no ask, sell only`;
+    else info = `${offtxt}¢ → buy ${QTY} for $${(QTY*bpx).toFixed(2)}, wins $${QTY.toFixed(2)}`;
+    $(`off_${key}_info`).textContent = info;
+  }
+}
+$("off_up_chips").addEventListener("pointerdown", e => e.target.dataset.v && setOff("up", e.target.dataset.v));
+$("off_dn_chips").addEventListener("pointerdown", e => e.target.dataset.v && setOff("down", e.target.dataset.v));
+$("off_up_custom").addEventListener("change", e => setOff("up", e.target.value.replace("+","")));
+$("off_dn_custom").addEventListener("change", e => setOff("down", e.target.value.replace("+","")));
+
+function fmt(v, d=1) { return v == null ? "-" : v.toFixed(d); }
+function signed(el, v, extra="") {
+  if (v == null) { el.textContent = "-"; el.className = (extra + "dim").trim(); return; }
+  el.textContent = (v >= 0 ? "+" : "") + v.toFixed(1);
+  el.className = (extra + (v >= 0 ? "green" : "red")).trim();
+}
+function fmtd(v) { return v == null ? "Δ-" : `Δ${v>=0?"+":""}${v.toFixed(1)}`; }
+function agetxt(v) { return v == null ? "-" : v.toFixed(1) + "s"; }
 function toast(msg, bad) {
   const t = $("toast");
   t.textContent = msg; t.style.display = "block";
@@ -297,19 +401,24 @@ function render(s) {
   $("left").textContent = s.left + "s";
   $("leftfill").style.width = (100 * s.left / s.bucket) + "%";
   $("leftfill").style.background = s.left <= 45 ? "var(--red)" : "var(--green)";
-  $("pm").textContent = fmt(s.pm); signed($("pm_d"), s.pm_d);
+  signed($("pm_d"), s.pm_d, "big ");
+  signed($("cb_d"), s.cb_d, "big ");
+  signed($("bn_d"), s.bn_d, "big ");
   $("beat").textContent = s.beat == null ? "-" : s.beat.toFixed(2) + (s.official ? "" : "~");
-  $("cb").textContent = fmt(s.cb); signed($("cb_d"), s.cb_d);
-  $("bn").textContent = fmt(s.bn); signed($("bn_d"), s.bn_d);
-  if (s.edge_active) { signed($("edge"), s.edge); } else { $("edge").textContent="-"; $("edge").className="dim"; }
+  $("age_pm").textContent = agetxt(s.ages.pm);
+  $("age_cb").textContent = agetxt(s.ages.cb);
+  $("age_bn").textContent = agetxt(s.ages.bn);
+  if (s.edge_active) { signed($("edge"), s.edge, "big "); }
+  else { $("edge").textContent="-"; $("edge").className="big dim"; }
   $("up_bid").textContent = fmt(s.up_bid, 2); $("up_ask").textContent = fmt(s.up_ask, 2);
   $("dn_bid").textContent = fmt(s.dn_bid, 2); $("dn_ask").textContent = fmt(s.dn_ask, 2);
-  $("ages").textContent = Object.entries(s.ages).map(([k,v]) => k + (v==null?"-":v+"s")).join("  ");
   $("trading_state").textContent = s.trading ? "trading ON" : "display only";
+  renderOffsetInfo();
 
   $("positions").innerHTML = "<tr><th>market</th><th>side</th><th>size</th><th>avg</th><th>cur</th><th>pnl</th></tr>" +
-    s.positions.map(p => `<tr><td>${p.title}</td><td>${p.outcome}</td><td>${p.size}</td>
-      <td>${p.avg.toFixed(3)}</td><td>${p.cur.toFixed(3)}</td>
+    s.positions.map(p => `<tr><td>${p.title} ${p.window=="previous"?'<span class="dim">(prev)</span>':""}</td>
+      <td class="${p.outcome.toLowerCase().startsWith('u')?'green':'red'}">${p.outcome}</td>
+      <td>${p.size}</td><td>${p.avg.toFixed(3)}</td><td>${p.cur.toFixed(3)}</td>
       <td class="${p.pnl>=0?'green':'red'}">${(p.pnl>=0?"+":"")+p.pnl.toFixed(2)}</td></tr>`).join("");
 
   $("fills").innerHTML = s.fills.slice().reverse().map(f =>
@@ -317,12 +426,11 @@ function render(s) {
      <span class="${f.label=='UP'?'green':'red'}">${f.label}</span>
      ${f.size} @ ${f.price.toFixed(3)} ${f.status||""}</div>`).join("");
 
-  renderCost();
   const key = [s.cb, s.bn, s.pm, s.up_bid, s.up_ask, s.dn_bid, s.dn_ask].join(",");
   if (key !== lastTapeKey) {
     lastTapeKey = key;
-    const line = `${s.clock} left ${s.left}s | CB ${fmt(s.cb)} ${fmtd(s.cb_d)} | BN ${fmt(s.bn)} ${fmtd(s.bn_d)}` +
-      ` | PM ${fmt(s.pm)} ${fmtd(s.pm_d)} | UP ${fmt(s.up_bid,2)}/${fmt(s.up_ask,2)} DN ${fmt(s.dn_bid,2)}/${fmt(s.dn_ask,2)}` +
+    const line = `${s.clock} left ${s.left}s | CB ${fmtd(s.cb_d)} | BN ${fmtd(s.bn_d)}` +
+      ` | PM ${fmtd(s.pm_d)} | UP ${fmt(s.up_bid,2)}/${fmt(s.up_ask,2)} DN ${fmt(s.dn_bid,2)}/${fmt(s.dn_ask,2)}` +
       (s.edge_active ? ` | edge ${fmtd(s.edge)}` : "");
     const t = $("tape");
     const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 5;
@@ -331,51 +439,56 @@ function render(s) {
     if (atBottom) t.scrollTop = t.scrollHeight;
   }
 }
-function fmtd(v) { return v == null ? "Δ-" : `Δ${v>=0?"+":""}${v.toFixed(1)}`; }
 
-function renderCost() {
-  if (!S) return;
-  const qty = parseFloat($("qty").value) || 0;
-  const manual = parseFloat($("price").value);
-  const upPx = isNaN(manual) ? S.up_ask : manual;
-  const dnPx = isNaN(manual) ? S.dn_ask : manual;
-  const part = (n, px) => px == null ? "-" :
-    `$${(n*px).toFixed(2)} → wins $${n.toFixed(2)}`;
-  $("cost").innerHTML =
-    `buying ${qty} shares: <span class="green">UP ${part(qty, upPx)}</span><br>` +
-    `&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="red">DN ${part(qty, dnPx)}</span>`;
-}
-$("qty").addEventListener("input", renderCost);
-$("price").addEventListener("input", renderCost);
-
-async function order(outcome, side) {
-  if (!S || !S.trading) { toast("trading not enabled (no credentials)", true); return; }
-  const price = $("price").value.trim() || "m";
-  const qty = $("qty").value.trim();
-  const ttl = $("ttl").value.trim();
-  const px = price === "m" ? (side === "BUY" ? (outcome=="up"?S.up_ask:S.dn_ask) : (outcome=="up"?S.up_bid:S.dn_bid)) : price;
-  if (!confirm(`${side} ${qty} ${outcome.toUpperCase()} @ ${px}${ttl?` (ttl ${ttl}s)`:""}?`)) return;
-  const r = await fetch("/api/order", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({outcome, side, price: price==="m"?"m":parseFloat(price), qty: parseFloat(qty), ttl: ttl||null})});
-  const d = await r.json();
+async function send(outcome, side, price) {
+  const label = outcome.toUpperCase();
+  if (!confirm(`${side} ${QTY} ${label} @ ${price === "m" ? "market" : price.toFixed(2)}?`)) return;
+  let d;
+  try {
+    const r = await fetch("/api/order", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({outcome, side, price, qty: QTY})});
+    d = await r.json();
+  } catch (e) {
+    toast("network error — order state UNKNOWN, check open orders: " + e, true);
+    loadOrders();
+    return;
+  }
   if (d.error) toast("order failed: " + d.error, true);
   else { toast(`order accepted @ ${d.price}: ${d.order_id.slice(0,18)}…`); loadOrders(); }
 }
+function order(outcome, side) {
+  if (!S || !S.trading) { toast("trading not enabled (no credentials)", true); return; }
+  send(outcome, side, "m");
+}
+function orderOffset(outcome, side) {
+  if (!S || !S.trading) { toast("trading not enabled (no credentials)", true); return; }
+  const px = offPrice(outcome, side);
+  if (px == null) { toast("no quote yet", true); return; }
+  send(outcome, side, px);
+}
 
 async function cancelAll() {
-  const r = await fetch("/api/cancel", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({order_id:"all"})});
-  const d = await r.json();
+  let d;
+  try {
+    const r = await fetch("/api/cancel", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({order_id:"all"})});
+    d = await r.json();
+  } catch (e) { toast("network error — cancel state unknown: " + e, true); return; }
   toast(d.error ? "cancel failed: " + d.error : "cancelled all", !!d.error);
   loadOrders();
 }
 async function cancelOne(id) {
-  await fetch("/api/cancel", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({order_id:id})});
+  try {
+    await fetch("/api/cancel", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({order_id:id})});
+  } catch (e) { toast("network error — cancel state unknown: " + e, true); }
   loadOrders();
 }
 async function loadOrders() {
-  const r = await fetch("/api/orders"); const d = await r.json();
+  let d;
+  try {
+    const r = await fetch("/api/orders"); d = await r.json();
+  } catch (e) { return; } // transient; retried every 10s
   if (!Array.isArray(d)) return;
   $("orders").innerHTML = "<tr><th>side</th><th>token</th><th>size</th><th>px</th><th>filled</th><th></th></tr>" +
     d.map(o => `<tr><td>${o.side}</td><td class="${o.label=='UP'?'green':'red'}">${o.label}</td>
@@ -383,15 +496,14 @@ async function loadOrders() {
       <td><button onclick="cancelOne('${o.id}')">x</button></td></tr>`).join("");
 }
 
-// click a quoted price to prefill the ticket
-for (const id of ["up_bid","up_ask","dn_bid","dn_ask"])
-  $(id).onclick = () => { $("price").value = $(id).textContent; };
-
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = e => render(JSON.parse(e.data));
   ws.onclose = () => setTimeout(connect, 1000);
 }
+renderQtyChips();
+renderOffsetChips();
+renderOffsetInfo();
 connect();
 loadOrders();
 setInterval(loadOrders, 10000);

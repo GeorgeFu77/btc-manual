@@ -53,6 +53,9 @@ class MarketView:
     token_down: str = ""
     up: Quote = field(default_factory=Quote)
     dn: Quote = field(default_factory=Quote)
+    # Previous window's tokens (so just-settled positions stay visible)
+    prev_token_up: str = ""
+    prev_token_down: str = ""
 
     # Latest positions snapshot from the data API (when trading is enabled)
     positions: list[dict] = field(default_factory=list)
@@ -109,6 +112,9 @@ class MarketView:
         self._roll("bn", px)
 
     def set_window(self, slug: str, token_up: str, token_down: str) -> None:
+        if self.token_up and token_up != self.token_up:
+            self.prev_token_up = self.token_up
+            self.prev_token_down = self.token_down
         self.slug = slug
         self.token_up = token_up
         self.token_down = token_down

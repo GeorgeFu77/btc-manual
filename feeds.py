@@ -171,38 +171,53 @@ def _parse_pm(data: str) -> list[tuple[int, float]]:
     return ticks
 
 
+async def _slug_tokens(
+    session: aiohttp.ClientSession, slug: str
+) -> tuple[str, str] | None:
+    """Fetch (token_up, token_down) for a market slug via the Gamma API."""
+    try:
+        async with session.get(
+            GAMMA_URL, params={"slug": slug},
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            events = await resp.json()
+        if not events:
+            return None
+        markets = events[0].get("markets") or []
+        if not markets:
+            return None
+        raw_ids = markets[0].get("clobTokenIds")
+        if isinstance(raw_ids, str):  # JSON-encoded string, parse again
+            raw_ids = json.loads(raw_ids)
+        if not raw_ids or len(raw_ids) < 2:
+            return None
+        return raw_ids[0], raw_ids[1]
+    except (aiohttp.ClientError, json.JSONDecodeError, KeyError, IndexError, asyncio.TimeoutError):
+        return None
+
+
 async def discover_window(
     session: aiohttp.ClientSession, view: MarketView
 ) -> tuple[str, str, str] | None:
     """Find the active market via the Gamma API.
 
-    Returns (slug, token_up, token_down) or None. Tries the current bucket
-    first, then next, then previous.
+    Returns (slug, token_up, token_down) or None. The next window's market
+    pre-exists on Gamma, so it is only tried when the boundary is actually
+    near — otherwise one transient failure on the current slug would route
+    trading to a window that hasn't started yet.
     """
     base = view.window_start()
-    for ts in (base, base + view.bucket_sec, base - view.bucket_sec):
+    candidates = [base]
+    if view.seconds_left() <= 20:
+        candidates.append(base + view.bucket_sec)
+    candidates.append(base - view.bucket_sec)
+    for ts in candidates:
         slug = f"{view.slug_prefix}{ts}"
-        try:
-            async with session.get(
-                GAMMA_URL, params={"slug": slug},
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status != 200:
-                    continue
-                events = await resp.json()
-            if not events:
-                continue
-            markets = events[0].get("markets") or []
-            if not markets:
-                continue
-            raw_ids = markets[0].get("clobTokenIds")
-            if isinstance(raw_ids, str):  # JSON-encoded string, parse again
-                raw_ids = json.loads(raw_ids)
-            if not raw_ids or len(raw_ids) < 2:
-                continue
-            return slug, raw_ids[0], raw_ids[1]
-        except (aiohttp.ClientError, json.JSONDecodeError, KeyError, IndexError, asyncio.TimeoutError):
-            continue
+        toks = await _slug_tokens(session, slug)
+        if toks:
+            return slug, toks[0], toks[1]
     return None
 
 
@@ -216,13 +231,25 @@ async def clob_task(view: MarketView, stop: asyncio.Event) -> None:
                 await asyncio.sleep(2.0)
                 continue
             slug, token_up, token_down = found
-            view.set_window(slug, token_up, token_down)
-            logger.info("CLOB window: %s", slug)
-
             window_ts = int(slug.rsplit("-", 1)[-1])
             boundary_mono = time.monotonic() + (
                 window_ts + view.bucket_sec - time.time()
             )
+            if boundary_mono <= time.monotonic():
+                # stale fallback window (already expired) — never activate it
+                await asyncio.sleep(2.0)
+                continue
+            view.set_window(slug, token_up, token_down)
+            logger.info("CLOB window: %s", slug)
+
+            if not view.prev_token_up:
+                # recover the previous window's tokens after a fresh start so
+                # the positions panel can show the just-settled market too
+                prev = await _slug_tokens(
+                    session, f"{view.slug_prefix}{window_ts - view.bucket_sec}"
+                )
+                if prev:
+                    view.prev_token_up, view.prev_token_down = prev
 
             try:
                 async with session.ws_connect(CLOB_URL, receive_timeout=ping_interval * 3) as ws:
