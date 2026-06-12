@@ -484,7 +484,7 @@ async function loadOrders() {
     const r = await fetch("/api/orders"); d = await r.json();
   } catch (e) { return; } // transient; retried every 10s
   if (!Array.isArray(d)) return;
-  $("orders").innerHTML = "<tr><th>side</th><th>token</th><th>size</th><th>px</th><th>filled</th><th></th></tr>" +
+  $("orders").innerHTML = "<tr><th>side</th><th>up/dn</th><th>size</th><th>price</th><th>filled so far</th><th></th></tr>" +
     d.map(o => `<tr><td>${o.side}</td><td class="${o.label=='UP'?'green':'red'}">${o.label}</td>
       <td>${o.size}</td><td>${o.price.toFixed(2)}</td><td>${o.matched}</td>
       <td><button onclick="cancelOne('${o.id}')">x</button></td></tr>`).join("");
