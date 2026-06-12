@@ -255,6 +255,7 @@ PAGE = r"""<!doctype html>
       ttl <input id="ttl" placeholder="sec (opt)">
     </div>
     <div class="dim" style="margin-top:6px">price blank or “m” = take best bid/ask</div>
+    <div id="cost" style="margin-top:6px"></div>
     <div style="margin-top:8px"><button onclick="cancelAll()">Cancel all</button>
       <span id="trading_state" class="dim"></span></div>
   </div>
@@ -316,6 +317,7 @@ function render(s) {
      <span class="${f.label=='UP'?'green':'red'}">${f.label}</span>
      ${f.size} @ ${f.price.toFixed(3)} ${f.status||""}</div>`).join("");
 
+  renderCost();
   const key = [s.cb, s.bn, s.pm, s.up_bid, s.up_ask, s.dn_bid, s.dn_ask].join(",");
   if (key !== lastTapeKey) {
     lastTapeKey = key;
@@ -330,6 +332,21 @@ function render(s) {
   }
 }
 function fmtd(v) { return v == null ? "Δ-" : `Δ${v>=0?"+":""}${v.toFixed(1)}`; }
+
+function renderCost() {
+  if (!S) return;
+  const qty = parseFloat($("qty").value) || 0;
+  const manual = parseFloat($("price").value);
+  const upPx = isNaN(manual) ? S.up_ask : manual;
+  const dnPx = isNaN(manual) ? S.dn_ask : manual;
+  const part = (n, px) => px == null ? "-" :
+    `$${(n*px).toFixed(2)} → wins $${n.toFixed(2)}`;
+  $("cost").innerHTML =
+    `buying ${qty} shares: <span class="green">UP ${part(qty, upPx)}</span><br>` +
+    `&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="red">DN ${part(qty, dnPx)}</span>`;
+}
+$("qty").addEventListener("input", renderCost);
+$("price").addEventListener("input", renderCost);
 
 async function order(outcome, side) {
   if (!S || !S.trading) { toast("trading not enabled (no credentials)", true); return; }
