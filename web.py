@@ -52,7 +52,6 @@ def _state(view: MarketView, trading: bool) -> dict:
             "pm": age(view.pm_ts_mono),
             "up": age(view.up.ts_mono), "dn": age(view.dn.ts_mono),
         },
-        "fills": view.fills[-15:],
         "positions": [
             {
                 "title": p.get("title") or p.get("slug") or "?",
@@ -297,8 +296,6 @@ PAGE = r"""<!doctype html>
     <table id="orders"></table></div>
   <div class="card" style="flex:1"><div class="lbl">positions (current + previous market)</div>
     <table id="positions"></table></div>
-  <div class="card" style="flex:1"><div class="lbl">fills / events</div>
-    <div id="fills"></div></div>
 </div>
 
 <div class="card" style="margin-top:12px"><div class="lbl">tape</div><div id="tape"></div></div>
@@ -423,11 +420,6 @@ function render(s) {
       <td class="${p.outcome.toLowerCase().startsWith('u')?'green':'red'}">${p.outcome}</td>
       <td>${p.size}</td><td>${p.avg.toFixed(3)}</td><td>${p.cur.toFixed(3)}</td>
       <td class="${p.pnl>=0?'green':'red'}">${(p.pnl>=0?"+":"")+p.pnl.toFixed(2)}</td></tr>`).join("");
-
-  $("fills").innerHTML = s.fills.slice().reverse().map(f =>
-    `<div><span class="dim">${f.ts}</span> ${f.kind} ${f.side}
-     <span class="${f.label=='UP'?'green':'red'}">${f.label}</span>
-     ${f.size} @ ${f.price.toFixed(3)} ${f.status||""}</div>`).join("");
 
   const key = [s.cb, s.bn, s.pm, s.up_bid, s.up_ask, s.dn_bid, s.dn_ask].join(",");
   if (key !== lastTapeKey) {
