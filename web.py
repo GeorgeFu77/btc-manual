@@ -374,7 +374,7 @@ function renderOffsetInfo() {
     let info;
     if (bpx == null && spx == null) info = "no quote yet";
     else if (bpx == null) info = `${offtxt}¢ → no ask, sell only`;
-    else info = `${offtxt}¢ → buy ${QTY} for $${(QTY*bpx).toFixed(2)}, wins $${QTY.toFixed(2)}`;
+    else info = `${offtxt}¢ → buy ${QTY} for $${(QTY*bpx).toFixed(2)}, profit $${(QTY*(1-bpx)).toFixed(2)}`;
     $(`off_${key}_info`).textContent = info;
   }
 }
