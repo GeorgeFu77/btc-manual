@@ -444,8 +444,7 @@ function render(s) {
 }
 
 async function send(outcome, side, price) {
-  const label = outcome.toUpperCase();
-  if (!confirm(`${side} ${QTY} ${label} @ ${price === "m" ? "market" : price.toFixed(2)}?`)) return;
+  // no confirm dialog — orders fire on a single click for speed
   let d;
   try {
     const r = await fetch("/api/order", {method:"POST", headers:{"Content-Type":"application/json"},
