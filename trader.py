@@ -158,7 +158,7 @@ class Trader:
 
 
 async def positions_poll_task(
-    trader: Trader, view: MarketView, stop: asyncio.Event, interval: float = 10.0
+    trader: Trader, view: MarketView, stop: asyncio.Event, interval: float = 4.0
 ) -> None:
     """Refresh view.positions periodically so the status bar stays current."""
     while not stop.is_set():

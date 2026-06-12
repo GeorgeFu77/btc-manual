@@ -79,12 +79,26 @@ def make_app(view: MarketView, trader: Trader | None, stop: asyncio.Event) -> we
     async def ws_handler(req):
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(req)
+        last_key = None
+        last_sent = 0.0
         try:
             while not stop.is_set() and not ws.closed:
-                await ws.send_json(_state(view, trader is not None))
+                # push the moment anything changes (~50ms granularity);
+                # 1s heartbeat keeps the countdown moving when quiet
+                key = (
+                    view.cb_last, view.bn_last, view.pm_last, view.pm_official,
+                    view.up.bid, view.up.ask, view.dn.bid, view.dn.ask,
+                    view.edge_active, view.slug,
+                    view.positions_ts_mono, len(view.fills),
+                )
+                now = time.monotonic()
+                if key != last_key or now - last_sent >= 1.0:
+                    await ws.send_json(_state(view, trader is not None))
+                    last_key = key
+                    last_sent = now
                 # also drain any client messages so pings don't pile up
                 try:
-                    msg = await ws.receive(timeout=0.25)
+                    msg = await ws.receive(timeout=0.05)
                     if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
                         break
                 except asyncio.TimeoutError:
@@ -131,6 +145,16 @@ def make_app(view: MarketView, trader: Trader | None, stop: asyncio.Event) -> we
             "ts": time.strftime("%H:%M:%S"), "kind": "SENT",
             "side": side, "label": label, "size": qty, "price": price,
         })
+
+        async def _refresh_positions():
+            await asyncio.sleep(1.0)  # give the fill a moment to register
+            try:
+                view.positions = await trader.positions()
+                view.positions_ts_mono = time.monotonic()
+            except Exception:
+                pass
+
+        asyncio.create_task(_refresh_positions())
         return web.json_response({"order_id": order_id, "price": price})
 
     async def api_cancel(req):
@@ -500,7 +524,7 @@ renderOffsetChips();
 renderOffsetInfo();
 connect();
 loadOrders();
-setInterval(loadOrders, 10000);
+setInterval(loadOrders, 4000);
 </script>
 </body></html>
 """
