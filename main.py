@@ -42,6 +42,11 @@ HELP = __doc__.split("Commands (REPL):", 1)[1]
 
 async def tape(view: MarketView, stop: asyncio.Event) -> None:
     """Print a new line whenever any number changes (old lines stay above)."""
+    # plain print() gets its ANSI colors escaped by patch_stdout —
+    # print_formatted_text renders them properly above the prompt
+    from prompt_toolkit import print_formatted_text
+    from prompt_toolkit.formatted_text import ANSI
+
     last_key: tuple | None = None
     min_gap = 0.2  # don't exceed ~5 lines/sec when books churn
     last_print = 0.0
@@ -51,7 +56,7 @@ async def tape(view: MarketView, stop: asyncio.Event) -> None:
         key = display.change_key(view)
         now = _time.monotonic()
         if key != last_key and now - last_print >= min_gap:
-            print(display.snapshot(view), flush=True)
+            print_formatted_text(ANSI(display.snapshot(view)))
             last_key = key
             last_print = now
         try:
