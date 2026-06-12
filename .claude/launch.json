@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "btc-manual-web",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["main.py", "--web", "--port", "8090"],
+      "port": 8090
+    }
+  ]
+}

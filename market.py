@@ -58,6 +58,13 @@ class MarketView:
     positions: list[dict] = field(default_factory=list)
     positions_ts_mono: float = 0.0
 
+    # Recent fill/order events for the UI (newest last, capped)
+    fills: list[dict] = field(default_factory=list)
+
+    def add_fill(self, event: dict) -> None:
+        self.fills.append(event)
+        del self.fills[:-50]
+
     def window_start(self, now: float | None = None) -> int:
         """Unix second the active window started."""
         if now is None:

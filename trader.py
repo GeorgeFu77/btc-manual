@@ -223,16 +223,33 @@ def _print_user_events(view: MarketView, data: str) -> None:
         et = msg.get("event_type") or msg.get("type")
         if et == "trade" and (msg.get("status") or "").upper() == "MATCHED":
             label = view.token_label(str(msg.get("asset_id", "")))
-            print(
-                f"\n*** FILL {msg.get('side', '?')} {label} "
-                f"{float(msg.get('size', 0) or 0):g} @ {float(msg.get('price', 0) or 0):.3f}"
-            )
+            size = float(msg.get("size", 0) or 0)
+            price = float(msg.get("price", 0) or 0)
+            print(f"\n*** FILL {msg.get('side', '?')} {label} {size:g} @ {price:.3f}")
+            view.add_fill({
+                "ts": time.strftime("%H:%M:%S"),
+                "kind": "FILL",
+                "side": msg.get("side", "?"),
+                "label": label,
+                "size": size,
+                "price": price,
+            })
         elif et == "order":
             matched = float(msg.get("size_matched", 0) or 0)
             if matched > 0:
                 label = view.token_label(str(msg.get("asset_id", "")))
+                price = float(msg.get("price", 0) or 0)
+                status = msg.get("status") or "?"
                 print(
                     f"\n*** ORDER {msg.get('side', '?')} {label} matched "
-                    f"{matched:g} @ {float(msg.get('price', 0) or 0):.3f} "
-                    f"({(msg.get('status') or '?')})"
+                    f"{matched:g} @ {price:.3f} ({status})"
                 )
+                view.add_fill({
+                    "ts": time.strftime("%H:%M:%S"),
+                    "kind": "ORDER",
+                    "side": msg.get("side", "?"),
+                    "label": label,
+                    "size": matched,
+                    "price": price,
+                    "status": status,
+                })

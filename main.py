@@ -6,6 +6,7 @@ scrollback. Edge is only shown in the final 45 seconds of a window.
 
 Usage:
     python main.py            # live tape + status bar + trading REPL
+    python main.py --web      # localhost web UI (open in Chrome)
     python main.py --watch    # tape only, Ctrl-C to exit
 
 Commands (REPL):
@@ -222,6 +223,14 @@ async def amain() -> None:
         "--window", type=int, choices=(5, 15), default=5,
         help="market window in minutes (default 5)",
     )
+    parser.add_argument(
+        "--web", action="store_true",
+        help="serve the web UI on localhost instead of the REPL",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8080,
+        help="web UI port (default 8080)",
+    )
     cli = parser.parse_args()
 
     load_dotenv()
@@ -240,6 +249,22 @@ async def amain() -> None:
     try:
         if cli.watch:
             await tape(view, stop)
+        elif cli.web:
+            from web import run_web
+
+            trader = None
+            if os.environ.get("POLYMARKET_PRIVATE_KEY"):
+                print("connecting trader ...")
+                try:
+                    trader = await Trader.connect()
+                    print(f"trading ready: {trader.address}")
+                    tasks.append(asyncio.create_task(user_fills_task(trader, view, stop)))
+                    tasks.append(asyncio.create_task(positions_poll_task(trader, view, stop)))
+                except Exception as e:
+                    print(f"trader init failed ({e}) — display only")
+            else:
+                print("no POLYMARKET_PRIVATE_KEY in .env — display only")
+            await run_web(view, trader, stop, port=cli.port)
         else:
             await repl(view, stop, tasks)
     except KeyboardInterrupt:
