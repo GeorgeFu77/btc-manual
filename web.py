@@ -220,7 +220,7 @@ PAGE = r"""<!doctype html>
   .chip { display:inline-block; padding:2px 9px; margin:2px 4px 2px 0; cursor:pointer;
           border:1px solid #3a4450; border-radius:12px; font-size:12px; color:var(--fg); }
   .chip:hover { border-color:#5c6773; }
-  .chip.sel { background:#2e5c3a; border-color:#3fb950; }
+  .chip.sel, input.sel { background:#2e5c3a; border-color:#3fb950; }
   #tape { max-height:200px; overflow-y:auto; font-size:12px; }
   #fills div { padding:1px 0; }
   #toast { position:fixed; bottom:16px; right:16px; background:#2a323c; padding:10px 16px;
@@ -326,6 +326,7 @@ function renderQtyChips() {
     $(box).innerHTML = QTY_OPTS.map(n =>
       `<span class="chip ${n===QTY?'sel':''}" data-v="${n}">${n}</span>`).join("") +
       `<input style="width:48px" placeholder="#" title="custom share count"
+        class="${QTY_OPTS.includes(QTY)?'':'sel'}"
         onchange="setQty(this.value)" ${QTY_OPTS.includes(QTY)?'':`value="${QTY}"`}>`;
   }
 }
@@ -340,7 +341,9 @@ function setOff(side, v) {
   if (isNaN(v)) return;
   OFF[side] = v;
   const custom = $(`off_${side === "up" ? "up" : "dn"}_custom`);
-  custom.value = OFF_OPTS.includes(v) ? "" : (v > 0 ? "+" : "") + v;
+  const isCustom = !OFF_OPTS.includes(v);
+  custom.value = isCustom ? (v > 0 ? "+" : "") + v : "";
+  custom.classList.toggle("sel", isCustom);  // highlight when active
   renderOffsetChips();
   renderOffsetInfo();
 }
