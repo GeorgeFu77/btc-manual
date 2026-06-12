@@ -158,17 +158,20 @@ class Trader:
 
 
 async def positions_poll_task(
-    trader: Trader, view: MarketView, stop: asyncio.Event, interval: float = 4.0
+    trader: Trader, view: MarketView, stop: asyncio.Event, interval: float = 0.25
 ) -> None:
-    """Refresh view.positions periodically so the status bar stays current."""
+    """Refresh view.positions continuously; back off briefly on API errors."""
+    delay = interval
     while not stop.is_set():
         try:
             view.positions = await trader.positions()
             view.positions_ts_mono = time.monotonic()
+            delay = interval
         except Exception as e:
             logger.warning("positions poll failed: %s", e)
+            delay = 3.0  # back off so a rate limit can clear
         try:
-            await asyncio.wait_for(stop.wait(), timeout=interval)
+            await asyncio.wait_for(stop.wait(), timeout=delay)
         except asyncio.TimeoutError:
             pass
 

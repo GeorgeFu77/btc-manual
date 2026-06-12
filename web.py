@@ -171,13 +171,24 @@ def make_app(view: MarketView, trader: Trader | None, stop: asyncio.Event) -> we
             return web.json_response({"error": str(e)}, status=500)
         return web.json_response({"ok": True})
 
+    # short cache so fast client polling can't hammer the exchange API
+    orders_cache: dict = {"ts": 0.0, "data": None}
+
     async def api_orders(_req):
         if trader is None:
             return web.json_response([])
-        try:
-            orders = await trader.open_orders()
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+        now = time.monotonic()
+        if orders_cache["data"] is not None and now - orders_cache["ts"] < 0.2:
+            orders = orders_cache["data"]
+        else:
+            try:
+                orders = await trader.open_orders()
+                orders_cache.update(ts=now, data=orders)
+            except Exception as e:
+                if orders_cache["data"] is not None:  # serve stale on hiccup
+                    orders = orders_cache["data"]
+                else:
+                    return web.json_response({"error": str(e)}, status=500)
         return web.json_response([
             {
                 "id": str(o.get("id") or o.get("orderID") or "?"),
@@ -327,7 +338,7 @@ PAGE = r"""<!doctype html>
 
 <script>
 const $ = id => document.getElementById(id);
-let S = null, lastTapeKey = "";
+let S = null, lastTapeKey = "", lastTapeAt = 0;
 
 // ---- share size (shared by every button) ----
 // chips select on pointerdown (delegated on the container) so the 250ms
@@ -446,8 +457,10 @@ function render(s) {
       <td class="${p.pnl>=0?'green':'red'}">${(p.pnl>=0?"+":"")+p.pnl.toFixed(2)}</td></tr>`).join("");
 
   const key = [s.cb, s.bn, s.pm, s.up_bid, s.up_ask, s.dn_bid, s.dn_ask].join(",");
-  if (key !== lastTapeKey) {
+  // one tape line per second max — cards above stay real-time
+  if (key !== lastTapeKey && performance.now() - lastTapeAt >= 1000) {
     lastTapeKey = key;
+    lastTapeAt = performance.now();
     const line = `${s.clock} left ${s.left}s | CB ${fmtd(s.cb_d)} | BN ${fmtd(s.bn_d)}` +
       ` | PM ${fmtd(s.pm_d)} | UP ${fmt(s.up_bid,2)}/${fmt(s.up_ask,2)} DN ${fmt(s.dn_bid,2)}/${fmt(s.dn_ask,2)}` +
       (s.edge_active ? ` | edge ${fmtd(s.edge)}` : "");
@@ -524,7 +537,7 @@ renderOffsetChips();
 renderOffsetInfo();
 connect();
 loadOrders();
-setInterval(loadOrders, 4000);
+setInterval(loadOrders, 250);
 </script>
 </body></html>
 """
