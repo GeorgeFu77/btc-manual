@@ -43,6 +43,8 @@ def _state(view: MarketView, trading: bool) -> dict:
         "pm": view.pm_last, "pm_d": view.pm_delta,
         "beat": view.pm_official if view.pm_official is not None else view.pm_ptb,
         "official": view.pm_official is not None,
+        "cb_official": view.cb_official is not None,
+        "bn_official": view.bn_official is not None,
         "edge": view.edge if view.edge_active else None,
         "edge_active": view.edge_active,
         "up_bid": view.up.bid, "up_ask": view.up.ask,
@@ -416,9 +418,9 @@ $("off_up_custom").addEventListener("change", e => setOff("up", e.target.value.r
 $("off_dn_custom").addEventListener("change", e => setOff("down", e.target.value.replace("+","")));
 
 function fmt(v, d=1) { return v == null ? "-" : v.toFixed(d); }
-function signed(el, v, extra="") {
+function signed(el, v, extra="", approx=false) {
   if (v == null) { el.textContent = "-"; el.className = (extra + "dim").trim(); return; }
-  el.textContent = (v >= 0 ? "+" : "") + v.toFixed(1);
+  el.textContent = (approx ? "~" : "") + (v >= 0 ? "+" : "") + v.toFixed(1);
   el.className = (extra + (v >= 0 ? "green" : "red")).trim();
 }
 function fmtd(v) { return v == null ? "Δ-" : `Δ${v>=0?"+":""}${v.toFixed(1)}`; }
@@ -436,9 +438,9 @@ function render(s) {
   $("left").textContent = s.left + "s";
   $("leftfill").style.width = (100 * s.left / s.bucket) + "%";
   $("leftfill").style.background = s.left <= 45 ? "var(--red)" : "var(--green)";
-  signed($("pm_d"), s.pm_d, "big ");
-  signed($("cb_d"), s.cb_d, "big ");
-  signed($("bn_d"), s.bn_d, "big ");
+  signed($("pm_d"), s.pm_d, "big ", !s.official);
+  signed($("cb_d"), s.cb_d, "big ", !s.cb_official);
+  signed($("bn_d"), s.bn_d, "big ", !s.bn_official);
   $("beat").textContent = s.beat == null ? "-" : s.beat.toFixed(2) + (s.official ? "" : "~");
   $("age_pm").textContent = agetxt(s.ages.pm);
   $("age_cb").textContent = agetxt(s.ages.cb);

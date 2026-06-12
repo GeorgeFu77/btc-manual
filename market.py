@@ -43,9 +43,12 @@ class MarketView:
     pm_ptb: float | None = None
     bn_window_id: int = 0
     bn_ptb: float | None = None
-    # Official "Price to Beat": the Chainlink tick stamped at the window-open
-    # second — exactly what Polymarket settles against. None until captured.
+    # Official window-open prices ("Price to Beat" for PM). Captured live
+    # from the boundary tick and/or backfilled from each venue's candle API.
+    # None until known; deltas fall back to the first-seen tick (approximate).
     pm_official: float | None = None
+    cb_official: float | None = None
+    bn_official: float | None = None
 
     # Active Polymarket window + order books
     slug: str = ""
@@ -88,19 +91,23 @@ class MarketView:
         if wid != getattr(self, f"{attr}_window_id"):
             setattr(self, f"{attr}_window_id", wid)
             setattr(self, f"{attr}_ptb", px)
+            setattr(self, f"{attr}_official", None)
         setattr(self, f"{attr}_last", px)
         setattr(self, f"{attr}_ts_mono", time.monotonic())
+
+    def set_official(self, attr: str, px: float, window_id: int) -> None:
+        """Set a window-open anchor, ignoring stale fetches from a past window."""
+        if window_id == self.window_start() and getattr(self, f"{attr}_official") is None:
+            setattr(self, f"{attr}_official", px)
 
     def update_cb(self, px: float) -> None:
         self._roll("cb", px)
 
     def update_pm(self, px: float, ts_ms: int | None = None) -> None:
-        wid = self.window_start()
-        if wid != self.pm_window_id:
-            self.pm_official = None
         self._roll("pm", px)
         # The official anchor is the tick stamped at the window-open second
         # (ticks are 1/s; allow a small gap before falling back to ~approx).
+        wid = self.pm_window_id
         if (
             ts_ms is not None
             and self.pm_official is None
@@ -130,11 +137,16 @@ class MarketView:
         q.ts_mono = time.monotonic()
 
     def _delta(self, attr: str) -> float | None:
+        """Delta vs the official window-open price, else vs first-seen tick."""
         last = getattr(self, f"{attr}_last")
-        ptb = getattr(self, f"{attr}_ptb")
-        if last is None or ptb is None:
+        if last is None:
             return None
-        return last - ptb
+        anchor = getattr(self, f"{attr}_official")
+        if anchor is None:
+            anchor = getattr(self, f"{attr}_ptb")
+        if anchor is None:
+            return None
+        return last - anchor
 
     # Deltas since window start — UP wins if the Chainlink (PM) price ends >= start.
     # CB leads PM by ~2s, so cb_delta is the early signal, edge the divergence.
@@ -144,9 +156,6 @@ class MarketView:
 
     @property
     def pm_delta(self) -> float | None:
-        # Prefer the official Price to Beat; fall back to first-seen tick
-        if self.pm_official is not None and self.pm_last is not None:
-            return self.pm_last - self.pm_official
         return self._delta("pm")
 
     @property

@@ -44,15 +44,17 @@ def snapshot(view: MarketView) -> str:
     clock = time.strftime("%H:%M:%S")
     left = view.seconds_left()
     edge = _signed(view.edge) if view.edge_active else f"{DIM}-{RESET}"
-    # '~' marks an approximate anchor (official window-open tick not seen yet)
-    approx = "" if view.pm_official is not None else "~"
+    # '~' marks an approximate anchor (official window-open price not known yet)
+    pm_a = "" if view.pm_official is not None else "~"
+    cb_a = "" if view.cb_official is not None else "~"
+    bn_a = "" if view.bn_official is not None else "~"
     beat = view.pm_official if view.pm_official is not None else view.pm_ptb
     parts = [
         f"{clock} left {left:3.0f}s",
-        f"CB {_f(view.cb_last, '{:.1f}')} Δ{_signed(view.cb_delta)}",
-        f"BN {_f(view.bn_last, '{:.1f}')} Δ{_signed(view.bn_delta)}",
-        f"PM {_f(view.pm_last, '{:.1f}')} Δ{approx}{_signed(view.pm_delta)}",
-        f"{DIM}beat {_f(beat, '{:.2f}')}{approx}{RESET}",
+        f"CB {_f(view.cb_last, '{:.1f}')} Δ{cb_a}{_signed(view.cb_delta)}",
+        f"BN {_f(view.bn_last, '{:.1f}')} Δ{bn_a}{_signed(view.bn_delta)}",
+        f"PM {_f(view.pm_last, '{:.1f}')} Δ{pm_a}{_signed(view.pm_delta)}",
+        f"{DIM}beat {_f(beat, '{:.2f}')}{pm_a}{RESET}",
         f"edge {edge}",
         f"{GREEN}UP{RESET} {_quote(view.up, GREEN)}",
         f"{RED}DN{RESET} {_quote(view.dn, RED)}",

@@ -25,6 +25,13 @@ BN_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 PM_URL = "wss://ws-live-data.polymarket.com"
 CLOB_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
+# Candle endpoints used to recover each venue's official window-open price
+# (1m candle whose time == window start; its open IS the price at the boundary)
+PM_CANDLES_URL = "https://polymarket.com/api/chainlink-candles"
+CB_CANDLES_URL = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+BN_KLINES_URL = "https://api.binance.com/api/v3/klines"
+_UA = {"User-Agent": "Mozilla/5.0"}
+
 _BACKOFF_MAX = 30.0
 
 
@@ -169,6 +176,72 @@ def _parse_pm(data: str) -> list[tuple[int, float]]:
             continue
     ticks.sort()
     return ticks
+
+
+async def anchor_task(view: MarketView, stop: asyncio.Event) -> None:
+    """Backfill official window-open prices from each venue's candle API.
+
+    The live feeds capture the boundary tick when the app is running at a
+    window change; this task covers mid-window starts (and acts as a check)
+    so the deltas match Polymarket's site exactly. Retries every second
+    until each anchor for the current window is known.
+    """
+    timeout = aiohttp.ClientTimeout(total=4)
+    async with aiohttp.ClientSession() as session:
+        while not stop.is_set():
+            wid = view.window_start()
+            try:
+                if view.pm_official is None:
+                    async with session.get(
+                        PM_CANDLES_URL,
+                        params={
+                            "symbol": "BTC", "interval": "1m", "limit": "15",
+                            "endTime": str((wid + 120) * 1000),
+                        },
+                        headers=_UA, timeout=timeout,
+                    ) as r:
+                        if r.status == 200:
+                            candles = (await r.json()).get("candles") or []
+                            row = [c for c in candles if c.get("time") == wid]
+                            if row:
+                                view.set_official("pm", float(row[0]["open"]), wid)
+                                logger.info("PM anchor (official beat): %s", row[0]["open"])
+            except Exception as e:
+                logger.debug("pm anchor fetch failed: %s", e)
+            try:
+                if view.cb_official is None:
+                    async with session.get(
+                        CB_CANDLES_URL,
+                        params={"granularity": "60", "start": str(wid - 60), "end": str(wid + 60)},
+                        headers=_UA, timeout=timeout,
+                    ) as r:
+                        if r.status == 200:
+                            rows = [c for c in await r.json() if c and c[0] == wid]
+                            if rows:  # [time, low, high, open, close, vol]
+                                view.set_official("cb", float(rows[0][3]), wid)
+            except Exception as e:
+                logger.debug("cb anchor fetch failed: %s", e)
+            try:
+                if view.bn_official is None:
+                    async with session.get(
+                        BN_KLINES_URL,
+                        params={
+                            "symbol": "BTCUSDT", "interval": "1m",
+                            "startTime": str(wid * 1000), "limit": "1",
+                        },
+                        headers=_UA, timeout=timeout,
+                    ) as r:
+                        if r.status == 200:
+                            rows = await r.json()
+                            if rows and int(rows[0][0]) == wid * 1000:
+                                view.set_official("bn", float(rows[0][1]), wid)
+            except Exception as e:
+                logger.debug("bn anchor fetch failed: %s", e)
+
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
 
 
 async def _slug_tokens(

@@ -28,7 +28,7 @@ import os
 from dotenv import load_dotenv
 
 import display
-from feeds import bn_task, cb_task, clob_task, pm_task
+from feeds import anchor_task, bn_task, cb_task, clob_task, pm_task
 from market import MarketView
 from trader import Trader, positions_poll_task, user_fills_task
 
@@ -244,6 +244,7 @@ async def amain() -> None:
         asyncio.create_task(bn_task(view, stop)),
         asyncio.create_task(pm_task(view, stop)),
         asyncio.create_task(clob_task(view, stop)),
+        asyncio.create_task(anchor_task(view, stop)),
     ]
 
     try:
