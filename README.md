@@ -1,8 +1,13 @@
 # btc_manual
 
-Minimal manual-trading console for Polymarket BTC up/down markets
-(5-minute windows by default). Live market numbers + manual limit orders.
-No bot, no strategies.
+A real-time market console for Polymarket's 5-minute "Bitcoin Up or Down"
+markets. It streams four live data feeds side by side, so you can see exactly
+how far the settlement price lags the exchanges, and can place limit orders
+by hand. No bot, no strategies: just fast, exact numbers.
+
+Built in Python with asyncio and aiohttp WebSockets. Every feed reconnects on its own,
+and the window's official "price to beat" is reconstructed exactly, even when
+you start mid-window.
 
 ## What it shows
 
@@ -33,12 +38,16 @@ python3 -m venv .venv
 cp .env.example .env   # fill in keys — only needed for trading
 ```
 
+Without credentials it runs in display-only mode. Credentials live only in
+your local `.env`, which is gitignored: never commit a private key.
+
 ## Run
 
 ```bash
 .venv/bin/python main.py               # tape + REPL (5m market)
 .venv/bin/python main.py --window 15   # the 15m market instead
 .venv/bin/python main.py --watch       # tape only, Ctrl-C to quit
+.venv/bin/python main.py --web         # browser UI at http://127.0.0.1:8080
 ```
 
 ## Commands
@@ -57,3 +66,11 @@ h / q               help / quit
 Orders are limit orders on the CLOB. Prices are in probability (0.01–0.99).
 `ttl` makes the order good-til-date; Polymarket enforces a minimum of 60s,
 so the wire expiration is `now + 60 + ttl`.
+
+## How I built it
+
+I built this with [Claude Code](https://claude.com/claude-code) as my coding
+partner. I defined what the console needed to show and how fast it had to be,
+tested it against the live market, and tracked down the data quirks (like
+which price feed the market actually settles on). Claude wrote most of the
+code. Commits are co-authored, so the history shows how it came together.
